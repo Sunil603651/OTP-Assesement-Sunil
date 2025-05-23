@@ -7,7 +7,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\RateLimiter;
 
 class OTPController extends Controller
 {
@@ -23,29 +23,36 @@ class OTPController extends Controller
 
     public function requestOTP(Request $request)
     {
-        $request->validate(['email' => 'required|email|exists:users,email']);
+        // Validate the email (but don't check if it exists in the users table)
+        $request->validate(['email' => 'required|email']);
 
-        $user = User::where('email', $request->email)->first();
+        $email = $request->email;
 
-        //dd($request->email);
         // Generate 6-digit OTP
         $otp = str_pad(rand(0, 999999), 6, '0', STR_PAD_LEFT);
-        $expiresAt = now()->addMinutes(5);
+        $expiresAt = now()->addMinutes(15); // 15-minute validity
+
+        // Clean up expired OTPs for this email
+        OTP::where('email', $email)
+            ->where('expired_at', '<', now())
+            ->delete();
 
         // Store hashed OTP
         OTP::create([
-            'user_id' => $user->id,
+            'email' => $email,
+            'user_id' => null, // No user_id since we're not checking the users table
             'code' => Hash::make($otp),
             'expired_at' => $expiresAt,
         ]);
 
         // Send OTP via email
-        Mail::raw("Your OTP is: $otp. It expires at $expiresAt.", function ($message) use ($user) {
-            $message->to($user->email)
+        Mail::raw("Your OTP is: $otp. It expires after 15 minutes.", function ($message) use ($email) {
+            $message->from('sunilb1906@gmail.com', config('app.name'))
+                ->to($email)
                 ->subject('Your One-Time Password');
         });
 
-        return redirect()->route('otp.verify.form')->with('email', $user->email);
+        return redirect()->route('otp.verify.form')->with('email', $email);
     }
 
     public function showVerifyForm()
@@ -55,25 +62,37 @@ class OTPController extends Controller
 
     public function verifyOTP(Request $request)
     {
+        // Combine the 6 input fields into a single OTP
+        $otp = '';
+        for ($i = 1; $i <= 6; $i++) {
+            $otp .= $request->input("otp_$i");
+        }
+
+        // Validate the OTP
+        $request->merge(['otp' => $otp]);
         $request->validate([
-            'email' => 'required|email|exists:users,email',
+            'email' => 'required|email',
             'otp' => 'required|digits:6',
         ]);
 
-        $user = User::where('email', $request->email)->first();
-        $otpRecord = OTP::where('user_id', $user->id)
+        $email = $request->email;
+        $otpRecord = OTP::where('email', $email)
             ->where('expired_at', '>', now())
             ->latest()
             ->first();
 
-        if (!$otpRecord || !Hash::check($request->otp, $otpRecord->otp)) {
-            return back()->withErrors(['otp' => 'Invalid or expired OTP']);
+        // Validation checks
+        if (!$otpRecord) {
+            return redirect()->back()->with('error', 'No valid OTP found or OTP has expired.')->with('email', $email);
         }
 
-        // OTP is valid, clear it
+        if (!Hash::check($otp, $otpRecord->code)) {
+            return redirect()->back()->with('error', 'Invalid OTP.')->with('email', $email);
+        }
+
+        // OTP is valid, mark it as used by deleting it
         $otpRecord->delete();
 
-        // Optionally log the user in or redirect
         return redirect()->route('otp.success')->with('success', 'OTP verified successfully!');
     }
 
@@ -82,6 +101,4 @@ class OTPController extends Controller
         return view('otp.success');
     }
 }
-
-
 ?>

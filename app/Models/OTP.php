@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class OTP extends Model
 {
     protected $table = 'otps';
-    protected $fillable = ['user_id', 'code', 'expired_at'];
+    protected $fillable = ['email', 'user_id', 'code', 'expired_at'];
 
     public function user()
     {
